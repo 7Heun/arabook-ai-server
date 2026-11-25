@@ -187,3 +187,10 @@ pyvenv.cfg
 pip-selfcheck.json
 
 # End of https://www.toptal.com/developers/gitignore/api/venv,python
+
+# 프로젝트 스크립트 (위 venv 템플릿의 [Ss]cripts 규칙에 걸리지 않도록 다시 포함)
+!scripts/
+!scripts/**
+
+# 평가 실행 캐시 · 임시 산출물
+eval/cache/

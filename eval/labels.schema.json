@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TeamAraBook/AraBook-AI-Server/eval/labels.schema.json",
+  "title": "AraBook 오프라인 추천 평가 라벨셋",
+  "type": "object",
+  "required": ["users"],
+  "additionalProperties": true,
+  "properties": {
+    "meta": {
+      "type": "object",
+      "properties": {
+        "format_version": {"type": "integer", "const": 1},
+        "label_source": {
+          "type": "string",
+          "description": "라벨 출처. 'example'/'synthetic' 계열이면 하네스가 측정을 거부합니다. 실제 라벨은 'mysql-loans-2026-09..11'처럼 방법과 기간을 적습니다."
+        },
+        "description": {"type": "string"},
+        "catalog": {"type": "string", "description": "라벨링 시점의 카탈로그 식별자"}
+      }
+    },
+    "users": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["member_id", "preferences", "relevant_isbns"],
+        "additionalProperties": false,
+        "properties": {
+          "member_id": {"type": ["integer", "string"]},
+          "preferences": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "사용자가 고른 서브카테고리 이름. 운영의 member_sub_category_selections와 같은 값."
+          },
+          "relevant_isbns": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "관련 있다고 라벨링한 ISBN13. 정답이 비어 있는 사용자는 Recall 계산에서 제외됩니다."
+          },
+          "graded_relevance": {
+            "type": "object",
+            "additionalProperties": {"type": "number"},
+            "description": "선택. 2=매우 관련, 1=관련. 있으면 nDCG도 계산합니다."
+          }
+        }
+      }
+    }
+  }
+}
