@@ -6,7 +6,7 @@
 
 - Python 3.10 · FastAPI · OpenAI · Chroma · MySQL
 - API 7개 + 헬스체크 1개
-- 테스트 83개 (외부 API/DB 없이 실행, CI 포함)
+- 테스트 86개 (외부 API/DB 없이 실행, CI 포함)
 
 ---
 
@@ -198,7 +198,7 @@ uvicorn app.main:app --reload            # http://127.0.0.1:8000/docs
 ### 테스트
 
 ```bash
-pytest                                   # 83 passed
+pytest                                   # 86 passed
 ruff check app eval scripts tests main.py --select F,E9
 ```
 
@@ -262,8 +262,9 @@ docker run --env-file .env -p 8000:8000 -v $(pwd)/chroma_db:/app/chroma_db arabo
 ├── eval/                    # 추천 품질 오프라인 평가 (지표·하네스·리포트)
 ├── scripts/
 │   ├── eval_recommend.py    # 평가 실행 CLI
-│   └── catalog_stats.py     # 카탈로그 통계 (읽기 전용)
-├── tests/                   # pytest (API 22, 서비스 25, 평가 36)
+│   ├── catalog_stats.py     # 카탈로그 통계 (읽기 전용)
+│   └── catalog_diagnostics.py # 임베딩 공간 진단 (읽기 전용)
+├── tests/                   # pytest (API 22, 서비스 25, 평가 36, 진단 3 = 86)
 ├── categories.txt           # 표준 카테고리 사전 (해시태그 필터)
 ├── main.py                  # 하위 호환 shim (`uvicorn main:app`)
 ├── requirements.txt         # 런타임 직접 의존성
@@ -356,6 +357,29 @@ python scripts/eval_recommend.py --labels eval/labels.json   # OPENAI_API_KEY �
 1/3을 반환하는 크기라 지표가 쉽게 포화됩니다. 그래서 지표 구현은 합성 카탈로그로 단위
 테스트(손 계산 값)해 두고, 실제 수치는 카탈로그가 수백 권 이상 쌓인 뒤 측정하는 것을
 전제로 했습니다.
+
+### 라벨 없이 지금 할 수 있는 점검 — 임베딩 공간 진단
+
+정답 라벨이 없어도, 지금 저장된 벡터로 "카테고리가 벡터 공간에서 뭉쳐 있는가"는 볼 수
+있습니다. `python scripts/catalog_diagnostics.py --db chroma_db` 실행 결과(2026-11-26):
+
+| 항목 | 값 |
+|---|---|
+| 최근접 1권이 서브카테고리를 공유 | 17/30 (56.7%) |
+| 같은 카테고리일 우연 기대값 | 14.7% |
+| lift (관측 / 우연) | 3.85× |
+| 상위 5권 중 하나라도 공유 | 26/30 (86.7%) |
+| 최근접 이웃 유사도 (최소/중앙/최대) | 0.839 / 0.865 / 0.931 |
+
+**이것은 정확도가 아닙니다.** 책 벡터에는 카테고리·해시태그가 이미 포함되어 있어
+이웃이 같은 카테고리인 것은 부분적으로 당연하고, 실제 질의는 서브카테고리 이름만
+임베딩한 짧은 문자열이라 조건이 다릅니다. 읽는 법은 두 가지입니다.
+
+- 카테고리 신호가 벡터에 실려 있다(lift 3.85×) → 현재 임베딩 텍스트 구성이 완전히
+  무의미하지는 않다는 근거.
+- 최근접 이웃 유사도가 0.84~0.93에 몰려 있다 → ada-002에서 책끼리 유사도가 전반적으로
+  높아 **순위 변별력이 크지 않을 수 있다**는 신호. 변별력은 라벨이 있는 평가에서 확인해야 합니다.
+- 카테고리가 전혀 다른 최근접 이웃 13권은 `eval/catalog_diagnostics.md`에 ISBN과 함께 남겼습니다.
 
 ### 한계와 다음 실험
 

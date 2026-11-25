@@ -89,7 +89,7 @@ L2 순위와 코사인 순위는 같습니다. 그래서 baseline은 L2로, 가�
 
 | 지표 | 정의 | 왜 보는가 | 주의 |
 |---|---|---|---|
-| Recall@k | top-k 중 정답 비율 / 전체 정답 수 | "읽을 만한 책을 놓치지 않는가" | k가 정답 수보다 작으면 상한이 k/|Rel| |
+| Recall@k | top-k 중 정답 비율 / 전체 정답 수 | "읽을 만한 책을 놓치지 않는가" | k가 정답 수보다 작으면 Recall 상한이 k ÷ 정답 수 |
 | Precision@k | top-k 중 정답 비율 / k | "추천한 것이 얼마나 맞는가" | 카탈로그가 k보다 작거나 반환 수가 적으면 불리 |
 | MRR | 첫 정답의 역순위 평균 | 하루 1권을 보여주는 서비스라 **첫 순위**가 중요 | 1위만 맞으면 1.0 |
 | nDCG@k | 등급 라벨 기반 순위 품질 | "매우 관련"을 위에 놓았는가 | 등급 라벨 있는 사용자만 평균 |
@@ -119,7 +119,15 @@ split에서 해야 한다는 것을 코드 주석과 리포트에 남겼습니�
 제한됩니다. 카테고리 라벨이 거칠면(예: "사랑" 8권) 다양성이 떨어질 수 있습니다.
 이 가설이 맞는지는 라벨로만 판단할 수 있습니다.
 
-## 5. 실행
+## 5. 라벨 없이 할 수 있는 점검
+
+`scripts/catalog_diagnostics.py`는 저장된 임베딩만으로 "최근접 이웃이 같은 서브카테고리인가"를
+확인합니다(우연 기대값 대비 lift). 카테고리 정보가 벡터에 실려 있는지, 유사도가 지나치게
+압축되어 있지는 않은지 보는 **진단**이며, 추천 정확도가 아닙니다. 결과는
+[`catalog_diagnostics.md`](catalog_diagnostics.md)에 있습니다(30권, lift 3.85×,
+최근접 유사도 0.839~0.931).
+
+## 6. 실행
 
 ```bash
 # 0) 의존성
@@ -137,6 +145,9 @@ python scripts/eval_recommend.py --labels eval/labels.example.json \
 
 # 4) 카탈로그 통계 (chromadb 불필요, 읽기 전용)
 python scripts/catalog_stats.py --db chroma_db
+
+# 5) 임베딩 공간 진단 (라벨 불필요, 정확도 아님)
+python scripts/catalog_diagnostics.py --db chroma_db
 ```
 
 | 옵션 | 기본값 | 설명 |
@@ -155,7 +166,7 @@ python scripts/catalog_stats.py --db chroma_db
 떨어집니다. 측정을 못 하면 `results.md`에 **사유와 함께 "미산출"**로 남고, 0으로
 채우지 않습니다.
 
-## 6. 재현성
+## 7. 재현성
 
 - `catalog_snapshot.json`: 2026-11-26 기준 카탈로그 30권의 메타데이터 스냅샷
   (임베딩 제외). `chroma_db/`는 더 이상 git에 올리지 않으므로, 카탈로그 구성이
@@ -167,7 +178,7 @@ python scripts/catalog_stats.py --db chroma_db
 - `chroma_db/`를 열 때는 항상 임시 폴더로 복사한 사본을 엽니다. 평가가 원본을
   바꾸지 않습니다.
 
-## 7. 한계 (지금 시점)
+## 8. 한계 (지금 시점)
 
 1. **실제 라벨 없음** → 수치 없음. 이 문서와 `results.md`는 방법론까지만 제공합니다.
 2. 카탈로그 30권 → 지표가 포화되고 분산이 큽니다. 사용자 수십 명으로는 변형 간
@@ -179,7 +190,7 @@ python scripts/catalog_stats.py --db chroma_db
 6. 단일 정답 1권을 반환하는 현행 API에서는 Recall@k의 의미가 제한적입니다.
    API를 top-k로 확장할 때 진짜 값이 생깁니다.
 
-## 8. 다음 실험 계획
+## 9. 다음 실험 계획
 
 1. MySQL 행동 로그로 `eval/labels.json` 생성 스크립트(`scripts/build_labels.py`)를
    만들고, 라벨 생성 시점과 카탈로그를 고정한다.
