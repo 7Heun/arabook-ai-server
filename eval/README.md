@@ -196,8 +196,8 @@ python scripts/catalog_diagnostics.py --db chroma_db
 
 ## 9. 다음 실험 계획
 
-1. MySQL 행동 로그로 `eval/labels.json` 생성 스크립트(`scripts/build_labels.py`)를
-   만들고, 라벨 생성 시점과 카탈로그를 고정한다.
+1. MySQL 행동 로그로 `eval/labels.json`을 만드는 스크립트를 추가하고(아직 없음),
+   라벨 생성 시점과 카탈로그를 고정한다.
 2. 사용자 단위 **dev/test split**(예: 7:3)을 두고, dev에서만 alpha를 튜닝한 뒤
    test에서 한 번 평가한다.
 3. 사용자 단위 부트스트랩으로 지표 **신뢰구간**을 계산해, 변형 간 차이가 노이즈인지
