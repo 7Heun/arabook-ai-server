@@ -162,6 +162,10 @@ python scripts/catalog_diagnostics.py --db chroma_db
 | `--allow-synthetic` | off | 합성 라벨 계산 허용(경고 기록) |
 | `--export-catalog` | – | 메타데이터 스냅샷 저장 |
 
+> 새로 clone한 환경에는 `chroma_db/`가 없습니다(저장소에 포함하지 않음). 이때는
+> `--catalog-json eval/catalog_snapshot.json`으로 형식 점검(`--dry-run`)만 가능하고,
+> 실제 측정에는 Chroma 데이터가 필요합니다. 스냅샷에는 임베딩이 없습니다.
+
 결과는 `eval/results.md`(사람이 읽는 표)와 `eval/results.csv`(지표별 long format)로
 떨어집니다. 측정을 못 하면 `results.md`에 **사유와 함께 "미산출"**로 남고, 0으로
 채우지 않습니다.
