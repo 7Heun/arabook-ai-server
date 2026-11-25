@@ -37,7 +37,6 @@ from eval.catalog import (  # noqa: E402
 from eval.embedders import EmbedderError, build_embedder  # noqa: E402
 from eval.harness import (  # noqa: E402
     LabelError,
-    LabelSet,
     evaluate,
     load_labels,
     validate_labels,

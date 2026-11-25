@@ -73,7 +73,7 @@ def statistics(items: list[dict[str, str]]) -> dict:
 
 
 def format_markdown(stats: dict, source: str) -> str:
-    lines = [f"# 카탈로그 구성 통계", "", f"- 출처: `{source}`", f"- 도서 수: **{stats['n_items']}권**", ""]
+    lines = ["# 카탈로그 구성 통계", "", f"- 출처: `{source}`", f"- 도서 수: **{stats['n_items']}권**", ""]
     lines.append("| 대분류 라벨 | 권수 |")
     lines.append("|---|---|")
     for label, count in stats["main_categories"]:

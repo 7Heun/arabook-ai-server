@@ -194,3 +194,8 @@ pip-selfcheck.json
 
 # 평가 실행 캐시 · 임시 산출물
 eval/cache/
+
+# 벡터 DB는 데이터입니다. 코드가 아니므로 git에 올리지 않습니다.
+# 재생성: /add-book 호출 또는 매월 베스트셀러 스케줄러 (eval/README.md 참고)
+chroma_db/
+*.sqlite3
