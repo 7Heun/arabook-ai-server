@@ -187,3 +187,23 @@ pyvenv.cfg
 pip-selfcheck.json
 
 # End of https://www.toptal.com/developers/gitignore/api/venv,python
+
+# 프로젝트 스크립트 (위 venv 템플릿의 [Ss]cripts 규칙에 걸리지 않도록 다시 포함)
+!scripts/
+!scripts/**
+# 위 예외가 scripts 아래 __pycache__까지 되살리므로 다시 제외합니다.
+scripts/**/__pycache__/
+
+# 평가 실행 캐시 · 임시 산출물
+eval/cache/
+
+# 실제 사용자 라벨(회원 ID + 읽기 이력)은 개인정보라 커밋하지 않습니다.
+# 생성: python scripts/export_labels.py (eval/labels.example.json은 형식 예시)
+eval/labels.json
+# 메타데이터 정제 스크립트가 만드는 사본/리포트
+chroma_db_clean/
+
+# 벡터 DB는 데이터입니다. 코드가 아니므로 git에 올리지 않습니다.
+# 재생성: /add-book 호출 또는 매월 베스트셀러 스케줄러 (eval/README.md 참고)
+chroma_db/
+*.sqlite3

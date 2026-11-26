@@ -1,0 +1,32 @@
+{
+  "meta": {
+    "format_version": 1,
+    "label_source": "synthetic-format-example",
+    "description": "eval/labels.json 의 형식을 보여주는 예시입니다. 정답은 실제 사용자 라벨이 아니라 카탈로그에 있는 책을 골라 만든 것입니다. 수치 측정에 쓰면 안 됩니다(하네스가 기본적으로 거부합니다).",
+    "catalog": "chroma_db (books 컬렉션, 30권) 기준 ISBN",
+    "how_to_make_real_labels": [
+      "MySQL의 대여/구매/좋아요/서재 추가 같은 양성 행동에서 사용자별 관련 도서를 모읍니다.",
+      "노출 편향을 줄이려면 추천으로 노출된 책만 정답으로 쓰지 말고, 사용자가 직접 찾아 읽은 책을 포함합니다.",
+      "라벨링 시점의 카탈로그 ISBN이 지금도 존재하는지 확인합니다(없는 책은 Recall 분모에서 빠져 지표가 낮아짐).",
+      "label_source에 수집 방법과 기간을 적습니다. 예: 'mysql-loans-2026-09..11'."
+    ]
+  },
+  "users": [
+    {
+      "member_id": 1001,
+      "preferences": ["추리/스릴러"],
+      "relevant_isbns": ["9791131963746", "9791158790745", "9788925574561"]
+    },
+    {
+      "member_id": 1002,
+      "preferences": ["천문학/지구과학", "과학 매거진"],
+      "relevant_isbns": ["9791198853905", "9788954782227"],
+      "graded_relevance": {"9791198853905": 2, "9788954782227": 1}
+    },
+    {
+      "member_id": 1003,
+      "preferences": ["청소년", "사랑"],
+      "relevant_isbns": ["9788936431419", "9791167372864"]
+    }
+  ]
+}
