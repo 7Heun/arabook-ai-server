@@ -147,7 +147,13 @@ def provide_recommendation_service(
     repository: BookRepository = Depends(provide_repository),
     embedder: EmbeddingService = Depends(provide_embedder),
 ) -> RecommendationService:
-    return RecommendationService(store, repository, embedder, weights=build_ranking_weights())
+    return RecommendationService(
+        store,
+        repository,
+        embedder,
+        weights=build_ranking_weights(),
+        exclude_recent_days=get_settings().recommend_exclude_recent_days,
+    )
 
 
 def provide_ingestion_service(
@@ -164,7 +170,11 @@ def build_scheduler_jobs() -> ScheduledJobs:
     return ScheduledJobs(
         repository=_repository(),
         recommendation=RecommendationService(
-            _vector_store(), _repository(), _embedder(), weights=build_ranking_weights()
+            _vector_store(),
+            _repository(),
+            _embedder(),
+            weights=build_ranking_weights(),
+            exclude_recent_days=get_settings().recommend_exclude_recent_days,
         ),
         ingestion=BookIngestionService(_aladin(), _crawler(), _classifier(), _repository(), _vector_store()),
         aladin=_aladin(),

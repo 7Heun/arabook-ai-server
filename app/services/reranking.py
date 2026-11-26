@@ -146,6 +146,24 @@ def jaccard(left: Iterable[str], right: Iterable[str]) -> float:
     return len(left_set & right_set) / len(left_set | right_set)
 
 
+def exclude_candidates(
+    candidates: Sequence[Candidate],
+    exclude_isbns: Iterable[str] | None,
+) -> list[Candidate]:
+    """이미 읽었거나 최근에 추천한 책을 후보에서 뺀다.
+
+    제외 목록이 비어 있으면 입력을 그대로(같은 순서로) 돌려준다. 후보가 전부
+    제외되는 경우의 정책은 이 함수가 정하지 않는다 — 호출부(서비스)가 "제외를 풀고
+    추천할지"를 결정하고 그 사실을 응답에 남긴다.
+    """
+    if not exclude_isbns:
+        return list(candidates)
+    excluded = {str(isbn).strip() for isbn in exclude_isbns if str(isbn).strip()}
+    if not excluded:
+        return list(candidates)
+    return [candidate for candidate in candidates if candidate.isbn not in excluded]
+
+
 def build_candidates(
     records: Sequence[Mapping[str, Any]],
     query_embedding: Sequence[float] | None = None,

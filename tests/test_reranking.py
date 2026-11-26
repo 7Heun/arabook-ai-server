@@ -13,6 +13,7 @@ from app.services.reranking import (
     build_candidates,
     category_overlap,
     cosine_similarity,
+    exclude_candidates,
     jaccard,
     mmr_rank,
     relevance_score,
@@ -172,6 +173,26 @@ class TestBuildCandidates:
             ]
         )
         assert [c.isbn for c in candidates] == ["b"]
+
+
+class TestExcludeCandidates:
+    def test_empty_exclusion_keeps_input_order(self):
+        candidates = [_candidate("a", 0.9), _candidate("b", 0.8)]
+        assert [c.isbn for c in exclude_candidates(candidates, [])] == ["a", "b"]
+        assert [c.isbn for c in exclude_candidates(candidates, None)] == ["a", "b"]
+
+    def test_excluded_isbns_are_removed(self):
+        candidates = [_candidate("a", 0.9), _candidate("b", 0.8), _candidate("c", 0.7)]
+        assert [c.isbn for c in exclude_candidates(candidates, {"a", "c"})] == ["b"]
+
+    def test_blank_and_non_string_entries_are_ignored(self):
+        candidates = [_candidate("a", 0.9)]
+        assert len(exclude_candidates(candidates, ["", "   "])) == 1
+
+    def test_returns_new_list(self):
+        candidates = [_candidate("a", 0.9)]
+        result = exclude_candidates(candidates, [])
+        assert result is not candidates
 
 
 class TestRankingWeights:
