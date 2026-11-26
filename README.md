@@ -5,8 +5,8 @@
 > 사용자의 취향과 가장 가까운 책을 골라 추천합니다.
 
 - Python 3.10 · FastAPI · OpenAI · Chroma · MySQL
-- API 7개 + 헬스체크 1개
-- 테스트 166개 (외부 API/DB 없이 실행, CI 포함)
+- API 8개 + 헬스체크 1개
+- 테스트 220개 (외부 API/DB 없이 실행, CI 포함)
 
 ---
 
@@ -93,17 +93,26 @@ sequenceDiagram
     A-->>S: {message}
 ```
 
-### (B) 추천 — `POST /recommend`
+### (B) 추천 — `POST /recommend` (1권) · `POST /recommendations` (상위 k권)
 
 1. `member_sub_category_selections`에서 회원이 고른 서브카테고리 이름을 읽습니다.
 2. 그 이름들을 공백으로 이어 붙인 문자열을 임베딩합니다. (예: `"추리/스릴러 SF"`)
 3. Chroma `books` 컬렉션에서 가까운 **후보 20권**(`n_results=20`)을 거리·임베딩과 함께 가져옵니다.
-4. 후보를 **하이브리드 재정렬**합니다(`app/services/reranking.py`).
+4. **이미 추천한 책을 뺍니다**(`exclude_isbns`). `books` 테이블과
+   `daily_book_id_recommendations`를 조인해 최근 `RECOMMEND_EXCLUDE_RECENT_DAYS`(기본 30일)
+   안에 이 회원에게 추천한 ISBN을 후보에서 제외합니다.
+   - 후보가 **전부** 제외되면 제외를 풀고 같은 규칙으로 추천합니다(30권 카탈로그에서 하루 1권이면
+     한 달이면 소진될 수 있어, "추천 없음"보다 낫다고 판단). 이 경우 `/recommendations` 응답의
+     `exclusion_relaxed`가 `true`입니다.
+   - 제외 이력을 읽지 못해도(테이블·권한 문제) 추천은 계속합니다. 로그만 남깁니다.
+   - 읽은 책(대여·서재)은 이 저장소가 스키마를 모르므로 아직 반영하지 않았습니다.
+5. 남은 후보를 **하이브리드 재정렬**합니다(`app/services/reranking.py`).
    - 관련도 = 코사인 유사도 + `0.15` × 선호 서브카테고리 일치율
    - 다양성 = MMR: `0.85 × 관련도 − 0.15 × max(이미 뽑힌 책과의 서브카테고리 Jaccard)`
-5. 1순위의 ISBN으로 MySQL `books`에서 `book_id`를 얻고, `daily_book_id_recommendations`에
-   **다음 날 날짜**로 저장합니다.
-6. `{"message": "Recommended book ID: 42"}` 형태로 응답합니다.
+6. `/recommend`는 1순위 ISBN으로 MySQL `books`에서 `book_id`를 얻고,
+   `daily_book_id_recommendations`에 **다음 날 날짜**로 저장한 뒤 `{"message": "Recommended book ID: 42"}`로 응답합니다.
+   `/recommendations`는 상위 k권을 순위·점수와 함께 응답하며 **이력을 저장하지 않습니다**
+   (하루 1권 이력은 Spring 서버가 읽는 계약이라 목록 조회가 채우면 안 됩니다).
 
 > 왜 1위를 바로 쓰지 않는가: 카탈로그 진단에서 책끼리의 최근접 코사인 유사도가
 > **0.839~0.931**에 몰려 있었습니다. 상위 후보의 벡터 점수 차이가 0.01~0.05 수준이라,
@@ -112,11 +121,9 @@ sequenceDiagram
 > 가중치는 평가셋으로 튜닝한 값이 아니라 **사전에 고정한 값**입니다(아래 7절).
 
 > 재정렬은 후보 목록 전체의 순위를 만듭니다. `/recommend`는 "하루 1권"이라 그중 1권만
-> 응답하므로 다양성 항은 2순위 이하에서만 드러납니다. 같은 함수를 평가 하네스가
-> `production_hybrid` 변형으로 그대로 불러, 순위 전체에 대한 효과를 재도록 했습니다.
-
-상위 k권이 필요하면 `RecommendationService.rank(member_id, limit)`을 쓰면 됩니다
-(현재 API 응답 스키마는 바꾸지 않았습니다).
+> 응답하므로 다양성 항은 2순위 이하에서만 드러납니다. 그래서 상위 k권을 그대로 주는
+> `/recommendations`를 추가했고(1권 응답 스키마는 그대로), 같은 함수를 평가 하네스가
+> `production_hybrid` 변형으로 불러 순위 전체의 효과를 잽니다.
 
 ---
 
@@ -130,13 +137,47 @@ sequenceDiagram
 | POST | `/add-book` | `{isbn}` | `{message}` | 조회·분류·저장 파이프라인 전체 실행 |
 | POST | `/delete-book` | `{isbn}` | `{message}` | Chroma에서 도서 삭제 |
 | GET | `/get-book?isbn=...` | 쿼리 파라미터 | `{title, author, isbn, description, hashtags, mainCategory, subCategory}` | Chroma에서 도서 조회 |
-| POST | `/recommend` | `{member_id}` | `{message}` | 회원 취향 기반 추천 |
+| POST | `/recommend` | `{member_id}` | `{message}` | 회원 취향 기반 추천 1권 (기존 응답 유지) |
+| POST | `/recommendations` | `{member_id, limit=5}` | `{member_id, limit, preferences[], recommendations[], excluded_isbn_count, excluded_candidate_count, exclusion_relaxed, message}` | 회원 취향 기반 상위 k권 (순위·점수 포함) |
 | GET | `/health` | – | `{status: "ok"}` | 배포/모니터링용 헬스체크 (추가된 엔드포인트) |
 
 `/get-book`의 `hashtags`, `subCategory`는 **쉼표로 구분된 문자열**입니다(기존 응답 형태 유지).
 `/delete-book`은 없는 책이어도 기존과 같이 `200`과 `"존재하지 않는 책 정보입니다."`를 반환합니다.
 `/recommend`의 요청·응답과 메시지 문자열(`No preferences found for the member.` 등)도
-기존과 같습니다. 내부 추천 알고리즘만 바뀌었습니다(요청/응답 스키마 변경 없음).
+기존과 같습니다. 내부 추천 알고리즘과 중복 제외만 추가되었습니다(요청/응답 스키마 변경 없음).
+
+### `/recommendations` 응답
+
+```json
+{
+  "member_id": 1001,
+  "limit": 5,
+  "preferences": ["추리/스릴러"],
+  "recommendations": [
+    {
+      "rank": 1,
+      "book_id": 42,
+      "isbn": "9791131963746",
+      "title": "유토피아",
+      "author": "김유진 (지은이)",
+      "main_category": "소설",
+      "sub_categories": ["추리/스릴러"],
+      "score": 0.987,
+      "similarity": 0.837,
+      "category_overlap": 1.0
+    }
+  ],
+  "excluded_isbn_count": 12,
+  "excluded_candidate_count": 11,
+  "exclusion_relaxed": false,
+  "message": null
+}
+```
+
+- `score` = 코사인 유사도 + 가중치 × 카테고리 일치율 (MMR은 앞선 선택과의 중복으로 **순서**만 바꾸므로 점수에 섞지 않았습니다).
+- `book_id`는 MySQL `books`에 없으면 `null`입니다(카탈로그와 DB는 별도 적재라 어긋날 수 있음).
+- `limit`은 1~20입니다(422로 검증). 선호 카테고리가 없으면 `recommendations`가 빈 배열이고
+  기존과 같은 문구가 `message`에 담깁니다.
 
 ### 에러 응답
 
@@ -212,7 +253,7 @@ uvicorn app.main:app --reload            # http://127.0.0.1:8000/docs
 ### 테스트
 
 ```bash
-pytest                                   # 166 passed
+pytest                                   # 220 passed
 ruff check app eval scripts tests main.py --select F,E9
 ```
 
@@ -245,6 +286,7 @@ docker run --env-file .env -p 8000:8000 -v $(pwd)/chroma_db:/app/chroma_db arabo
 | `RECOMMEND_POOL_SIZE` | – | 재정렬할 후보 수, 기본 `20` |
 | `RECOMMEND_CATEGORY_WEIGHT` | – | 카테고리 일치율 가중치, 기본 `0.15` |
 | `RECOMMEND_MMR_LAMBDA` | – | MMR lambda(1이면 다양성 항 끔), 기본 `0.85` |
+| `RECOMMEND_EXCLUDE_RECENT_DAYS` | – | 최근 추천 이력을 후보에서 빼는 기간(일), 기본 `30`. `0`이면 제외 안 함 |
 | `SSH_TUNNEL_HOST_ADDRESS` / `SSH_TUNNEL_HOST_PORT` | O(DB) | DB 접속용 SSH 점프 호스트 |
 | `SSH_USERNAME` / `SSH_PRIVATE_KEY` | O(DB) | SSH 사용자/개인 키 경로 |
 | `MYSQL_SERVER_HOST` | O(DB) | 터널 너머 MySQL 호스트 |
@@ -279,12 +321,14 @@ docker run --env-file .env -p 8000:8000 -v $(pwd)/chroma_db:/app/chroma_db arabo
 ├── eval/                    # 추천 품질 오프라인 평가 (지표·하네스·리포트)
 ├── scripts/
 │   ├── eval_recommend.py    # 평가 실행 CLI
+│   ├── diversity_benchmark.py # Top-5 다양성·커버리지 실측 (30권, 정확도 아님)
 │   ├── export_labels.py     # MySQL 행동 로그 → eval/labels.json (라벨 추출)
 │   ├── clean_catalog.py     # 카탈로그 메타데이터 점검·정규화 (기본 dry-run)
 │   ├── catalog_stats.py     # 카탈로그 통계 (읽기 전용)
 │   └── catalog_diagnostics.py # 임베딩 공간 진단 (읽기 전용)
-├── tests/                   # pytest (API 22, 서비스 32, 재정렬 29, 평가 지표 27,
-│                            #  평가 하네스 10, 진단 3, 라벨 추출 24, 카탈로그 정제 19 = 166)
+├── tests/                   # pytest (API 30, 서비스 45, 재정렬 33, 평가 지표 27,
+│                            #  평가 하네스 10, 진단 3, 라벨 추출 24, 카탈로그 정제 19,
+│                            #  저장소 SQL 8, 다양성 실측 21 = 220)
 ├── categories.txt           # 표준 카테고리 사전 (해시태그 필터)
 ├── main.py                  # 하위 호환 shim (`uvicorn main:app`)
 ├── requirements.txt         # 런타임 직접 의존성
@@ -371,13 +415,14 @@ python scripts/export_labels.py \
 - 사용자별 정답 수·카탈로그 밖 ISBN 제거 건수 같은 요약을 함께 출력합니다.
 - `eval/labels.json`은 실제 사용자 데이터라 `.gitignore`에 넣었습니다(커밋 금지).
 
-### 현재 상태: 수치 미산출
+### 현재 상태: 정확도 지표는 미산출 (`eval/results.md`)
 
 이 작업 환경에서는 운영 DB(`eval/labels.json`)에 접근할 수 없어 **라벨을 실제로
 추출하지는 못했습니다.** 예시 라벨은 형식 예시(합성)이고, 하네스는
 `label_source`가 `example`/`synthetic`이면 측정을 거부합니다(합성 수치가 커밋되는 것을
 막기 위한 장치). 그래서 `eval/results.md`에는 사유와 함께 **"수치 미산출"**로 기록되어
-있고, 표를 0으로 채우지 않았습니다.
+있고, 표를 0으로 채우지 않았습니다. 추천 정확도(Recall·MRR·nDCG)는 여전히 측정되지
+않았습니다 — 아래의 다양성·커버리지 실측은 그것과 다른 지표입니다.
 
 측정은 다음 한 줄로 실행합니다.
 
@@ -427,6 +472,36 @@ python scripts/eval_recommend.py --labels eval/labels.json   # OPENAI_API_KEY �
   높아 **순위 변별력이 크지 않을 수 있다**는 신호. 변별력은 라벨이 있는 평가에서 확인해야 합니다.
 - 카테고리가 전혀 다른 최근접 이웃 13권은 `eval/catalog_diagnostics.md`에 ISBN과 함께 남겼습니다.
 
+### 실측: Top-5의 다양성·커버리지 (정확도 아님, 2026-11-26)
+
+라벨 없이도 **"두 순위 규칙이 만드는 목록이 30권 안에서 얼마나 퍼지는가"** 는 잴 수 있습니다.
+`python scripts/diversity_benchmark.py`가 외부 API 호출 없이 `chroma_db`의 실제 임베딩으로
+`baseline_vector`(이전 운영: L2 최근접)와 `production_hybrid`(현재 운영)의 Top-5를 비교합니다.
+전체 리포트는 [`eval/diversity_benchmark.md`](eval/diversity_benchmark.md).
+
+질의는 저장된 책 임베딩으로 만든 **대리 질의** 2종입니다.
+`book`(책 1권 임베딩을 질의로, 그 책만 후보에서 제외, 30건)과
+`category`(서브카테고리 책들의 평균 벡터, 13건).
+
+| 질의 | variant | 고유 서브카테고리@5 | 정규화 엔트로피@5 | 커버리지@3 | 커버리지@5 |
+|---|---|---|---|---|---|
+| `book` (30건) | `baseline_vector` | 7.03 | 0.937 | 80.0% | 93.3% |
+| `book` (30건) | `production_hybrid` | **7.83** | **0.954** | **100.0%** | **100.0%** |
+| `category` (13건) | `baseline_vector` | 7.15 | 0.911 | 80.0% | 83.3% |
+| `category` (13건) | `production_hybrid` | **7.69** | **0.917** | 80.0% | **90.0%** |
+
+두 변형의 Top-5는 실제로 꽤 다릅니다(같은 책으로 겹치는 정도 평균 Jaccard 0.535(`book`)·0.696(`category`),
+top-1 일치 46.7%·76.9%). 즉 재정렬이 1위도 자주 바꾸고, 2~5위는 더 많이 바꿉니다.
+
+**이것도 정확도가 아닙니다.** 읽어야 할 것과 읽으면 안 될 것을 구분한 것입니다.
+
+- 커버리지·고유 카테고리·엔트로피는 하이브리드(MMR)가 더 높습니다. 의도한 대로 "같은 카테고리 반복"이 줄었습니다.
+- 그러나 k=3 엔트로피는 `book` 질의에서 0.950 → 0.939로 **조금 낮아졌습니다.** 이득이 단조롭지 않습니다.
+- 목록 예시를 보면 하이브리드의 2~5위가 **관련도가 낮은 다른 장르로 건너뛰는 경우**가 있습니다
+  (예: 추리/스릴러 질의 → 우주·노화 책). 다양성을 얻는 대신 관련도를 포기하는 trade-off이며,
+  어느 쪽이 나은지는 라벨(`eval/labels.json`)이 있어야 판단할 수 있습니다.
+- 30권·대리 질의·중복 제외 미적용 조건이라, 운영 성능 수치로 인용하면 안 됩니다.
+
 ### 라벨 없이 지금 할 수 있는 정비 — 카탈로그 정제
 
 `python scripts/clean_catalog.py --db chroma_db`는 메타데이터 결함을 **고치기 전에**
@@ -458,6 +533,8 @@ python scripts/clean_catalog.py --db chroma_db --apply --out-db chroma_db_clean
 3. 라벨이 이진(관련/비관련)이라 만족도(별점·완독)를 담지 못함.
 4. 오프라인 지표와 온라인 지표(클릭·대여 전환)는 다를 수 있음 → 마지막에 A/B로 확인.
 5. 콜드 스타트(선호 카테고리 없는 회원)는 평가에서 제외됨.
+6. `/recommendations`로 top-k가 열렸지만 앱(Spring)은 아직 1권만 쓰므로, 온라인 지표는
+   당분간 1권 기준입니다. 오프라인 Recall@k는 라벨이 생기면 바로 계산됩니다.
 
 다음 순서: ① 라벨 추출 실행 → ② dev/test split에서 alpha·lambda 튜닝 → ③ 사용자 단위 부트스트랩으로
 신뢰구간 → ④ 카탈로그 확장 후 `category_filter`의 Recall 상한 문제 재검토 → ⑤ 온라인 A/B.
@@ -483,15 +560,19 @@ python scripts/clean_catalog.py --db chroma_db --apply --out-db chroma_db_clean
 
 ### 남아 있는 한계
 
-- **추천이 1권뿐**입니다. 순위 목록을 주지 않으므로 Recall@k 같은 지표를 온라인에서
-  바로 볼 수 없습니다. API를 top-k로 확장하는 것이 평가에도 도움이 됩니다.
-  (내부적으로는 `RecommendationService.rank(member_id, limit)`이 순위 전체를 돌려줍니다.)
+- **Spring 서버는 여전히 1권만 받습니다.** `/recommend`가 그 응답을 유지하므로, 앱 화면과
+  온라인 지표는 당분간 1권 기준입니다. 순위 목록은 `/recommendations`로 열어 두었지만,
+  Spring 쪽에서 옮겨 타기 전까지는 실제 효과가 없습니다.
 - **다양성 항은 1권 응답에서는 드러나지 않습니다.** MMR은 2순위 이하의 순서를 바꾸므로,
-  지금 효과가 나타나는 곳은 평가 하네스(`production_hybrid`)와 top-k 확장 이후입니다.
-- **재정렬 가중치가 실측으로 검증되지 않았습니다**(0.15, 0.85는 사전 고정값). 라벨이
+  효과가 나타나는 곳은 `/recommendations`와 평가 하네스입니다.
+- **재정렬 가중치가 실측으로 검증되지 않았습니다**(0.15, 0.85는 사전 고정값).
+  다양성·커버리지는 쟀지만(`eval/diversity_benchmark.md`) 정확도는 아니므로, 라벨이
   생기면 dev split에서 튜닝해야 합니다.
-- **취향 신호가 서브카테고리뿐**입니다. 읽은 책·별점·대여 이력을 활용하지 않고,
-  이미 읽은 책을 추천에서 제외하지도 않습니다.
+- **중복 제외는 추천 이력만 봅니다.** 읽은 책(대여·서재)은 이 저장소가 테이블을 모르므로
+  반영하지 않았습니다. 또 후보가 모두 제외되면 제외를 푸는 정책이라, 카탈로그가 작을 때는
+  같은 책이 다시 나올 수 있습니다(응답의 `exclusion_relaxed`로 구분 가능).
+- **우선순위 제외가 아닌 하드 필터**입니다. 제외로 후보가 줄면 다양성·관련도 상한도 줄어듭니다.
+  `RECOMMEND_POOL_SIZE`(20)를 키우지 않으면 제외가 많을 때 고를 책이 줄어듭니다.
 - **콜드 스타트**: 선호 카테고리가 없으면 추천 대신 안내 메시지를 반환합니다.
 - **카탈로그가 작습니다**(실측 30권). 추천 품질의 상한이 카탈로그 크기에 묶입니다.
 - **임베딩 모델이 오래됨**(ada-002). 교체하려면 전체 재색인이 필요합니다.
@@ -501,6 +582,8 @@ python scripts/clean_catalog.py --db chroma_db --apply --out-db chroma_db_clean
   실패합니다. 스케줄러는 다음 주기에 다시 시도합니다.
 - **DB 접속마다 SSH 터널을 엽니다.** 호출량이 늘면 병목이 됩니다(커넥션 풀/단일 터널
   재사용이 다음 개선).
+- **회원별 추천에 DB 조회가 하나 늘었습니다**(최근 추천 이력). 스케줄러는 회원마다
+  터널을 여는 구조라, 회원 수가 많아지면 이 조회도 함께 비용이 됩니다.
 - **API 인증이 없습니다.** 내부망에서 Spring 서버만 호출한다는 전제입니다. 외부 노출 시
   인증이 필요합니다.
 - **스케줄러 중복 실행은 설정으로 회피**하는 수준입니다. 여러 인스턴스 환경에서는
@@ -508,8 +591,9 @@ python scripts/clean_catalog.py --db chroma_db --apply --out-db chroma_db_clean
 
 ### 다음에 하면 좋은 것
 
-1. 추천 API를 top-k로 확장하고, 이미 읽은 책을 제외(재정렬에서도 후보 제외)
+1. Spring 서버를 `/recommendations`로 옮겨 앱에 top-k를 보여주고, 노출·클릭을 로그로 남기기
 2. 운영 DB에서 `scripts/export_labels.py` 실행 → dev/test split에서 alpha·lambda 튜닝 → 온라인 A/B
-3. 카탈로그 확장(베스트셀러·신간 자동 적재 범위 넓히기)
-4. 외부 호출 재시도/백오프, DB 커넥션 풀
-5. 임베딩 모델 교체 + 재색인 마이그레이션
+3. 읽은 책(대여·서재 테이블)까지 제외 대상에 포함
+4. 카탈로그 확장(베스트셀러·신간 자동 적재 범위 넓히기)
+5. 외부 호출 재시도/백오프, DB 커넥션 풀
+6. 임베딩 모델 교체 + 재색인 마이그레이션
