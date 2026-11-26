@@ -46,7 +46,12 @@ from eval.report import RunContext, render_markdown, write_csv, write_markdown  
 EXIT_OK = 0
 EXIT_NOT_MEASURED = 2
 
-VARIANT_CHOICES = ["baseline_vector", "category_filter", "hybrid_category_boost"]
+VARIANT_CHOICES = [
+    "baseline_vector",
+    "category_filter",
+    "hybrid_category_boost",
+    "production_hybrid",
+]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

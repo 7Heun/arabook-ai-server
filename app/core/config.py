@@ -62,6 +62,11 @@ class Settings:
     http_timeout_seconds: float = 10.0
     scheduler_enabled: bool = True
     log_level: str = "INFO"
+    # 추천 재정렬 (app/services/reranking.py). 기본값은 사전 고정값이며,
+    # 평가셋으로 튜닝한 값이 아니다. 바꾸면 추천 결과가 달라진다.
+    recommend_pool_size: int = 20
+    recommend_category_weight: float = 0.15
+    recommend_mmr_lambda: float = 0.85
     database: DatabaseSettings = DatabaseSettings(None, 22, None, None, None, None, None, None)
 
     @classmethod
@@ -77,6 +82,9 @@ class Settings:
             http_timeout_seconds=float(os.getenv("HTTP_TIMEOUT_SECONDS", "10")),
             scheduler_enabled=_env_bool("SCHEDULER_ENABLED", True),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            recommend_pool_size=int(os.getenv("RECOMMEND_POOL_SIZE", "20") or 20),
+            recommend_category_weight=float(os.getenv("RECOMMEND_CATEGORY_WEIGHT", "0.15")),
+            recommend_mmr_lambda=float(os.getenv("RECOMMEND_MMR_LAMBDA", "0.85")),
             database=DatabaseSettings(
                 ssh_host=os.getenv("SSH_TUNNEL_HOST_ADDRESS"),
                 ssh_port=int(os.getenv("SSH_TUNNEL_HOST_PORT", "22") or 22),

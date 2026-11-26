@@ -101,6 +101,31 @@ def test_hybrid_boost_reorders_on_category_match(catalog):
     assert ranking == ["a", "b", "c", "d"]
 
 
+def test_production_hybrid_applies_mmr_diversity():
+    """운영 변형은 카테고리 가중에 더해 MMR로 같은 카테고리 중복을 뒤로 미룬다.
+
+    관련도(b2 1.05 > c1 0.88)만 보면 b2가 2순위지만, b2는 1순위와 서브카테고리가
+    같아 중복 페널티(-0.15)를 받아 c1(0.748)에 밀린다(0.7425).
+    """
+    catalog = Catalog(
+        items=[
+            _item("b1", ("y",), (1.0, 0.0)),
+            _item("b2", ("y",), (0.9, 0.43589)),
+            _item("c1", ("z",), (0.88, 0.47497)),
+        ],
+        source="test",
+        dimension=2,
+    )
+    results = evaluate(
+        labels=_labels([{"member_id": 1, "preferences": ["y"], "relevant_isbns": ["b1"]}]),
+        catalog=catalog,
+        embedder=FixedEmbedder([1.0, 0.0]),
+        variant_keys=["production_hybrid"],
+        ks=[3],
+    )
+    assert results["production_hybrid"].ranked["1"] == ["b1", "c1", "b2"]
+
+
 def test_vector_index_requires_embeddings():
     catalog_without_embeddings = Catalog(
         items=[

@@ -16,6 +16,7 @@ from fastapi import Depends
 from openai import AsyncOpenAI
 
 from app.core.config import Settings, get_settings
+from app.core.errors import ConfigurationError
 from app.services.aladin import AladinClient
 from app.services.classifier import CategoryClassifier
 from app.services.database import BookRepository
@@ -23,6 +24,7 @@ from app.services.kyobo import KyoboHashtagCrawler
 from app.services.library import BookIngestionService
 from app.services.llm import EmbeddingService, LLMService
 from app.services.recommendation import RecommendationService
+from app.services.reranking import RankingWeights
 from app.services.scheduler import ScheduledJobs
 from app.services.vector_store import BookVectorStore
 
@@ -124,12 +126,28 @@ def provide_classifier() -> CategoryClassifier:
     return _classifier()
 
 
+def build_ranking_weights() -> RankingWeights:
+    """환경 변수에서 추천 재정렬 가중치를 만든다.
+
+    범위를 벗어난 값이 들어오면 요청마다 500이 나는 대신, 설정 오류로 바로 드러나게 한다.
+    """
+    settings = get_settings()
+    try:
+        return RankingWeights(
+            category_weight=settings.recommend_category_weight,
+            mmr_lambda=settings.recommend_mmr_lambda,
+            pool_size=settings.recommend_pool_size,
+        )
+    except ValueError as exc:
+        raise ConfigurationError(f"추천 재정렬 설정이 올바르지 않습니다: {exc}") from exc
+
+
 def provide_recommendation_service(
     store: BookVectorStore = Depends(provide_vector_store),
     repository: BookRepository = Depends(provide_repository),
     embedder: EmbeddingService = Depends(provide_embedder),
 ) -> RecommendationService:
-    return RecommendationService(store, repository, embedder)
+    return RecommendationService(store, repository, embedder, weights=build_ranking_weights())
 
 
 def provide_ingestion_service(
@@ -145,7 +163,9 @@ def provide_ingestion_service(
 def build_scheduler_jobs() -> ScheduledJobs:
     return ScheduledJobs(
         repository=_repository(),
-        recommendation=RecommendationService(_vector_store(), _repository(), _embedder()),
+        recommendation=RecommendationService(
+            _vector_store(), _repository(), _embedder(), weights=build_ranking_weights()
+        ),
         ingestion=BookIngestionService(_aladin(), _crawler(), _classifier(), _repository(), _vector_store()),
         aladin=_aladin(),
     )

@@ -143,14 +143,47 @@ class BookVectorStore:
             "subCategory": metadata.get("subCategory"),
         }
 
-    async def find_nearest(self, embedding: list[float], n_results: int = 1) -> dict[str, Any] | None:
+    async def find_candidates(
+        self, embedding: list[float], n_results: int = 1
+    ) -> list[dict[str, Any]]:
+        """질의와 가까운 후보를 거리·임베딩과 함께 돌려준다.
+
+        재정렬(`app.services.reranking`)이 후보들 사이의 순위를 다시 매기려면
+        메타데이터만으로는 부족하다. 거리와 도서 임베딩을 함께 가져와, 임베딩이 있으면
+        코사인을 직접 계산한다(거리 공간 설정에 의존하지 않기 위해).
+
+        반환: `[{"metadata": {...}, "distance": float | None, "embedding": [...] | None}, ...]`
+        """
         try:
             results = await asyncio.to_thread(
-                self.collection.query, query_embeddings=[embedding], n_results=n_results
+                self.collection.query,
+                query_embeddings=[embedding],
+                n_results=n_results,
+                include=["metadatas", "distances", "embeddings"],
             )
         except Exception as exc:
             raise ServiceUnavailableError(f"벡터 검색에 실패했습니다: {exc}") from exc
-        metadatas = results.get("metadatas") or []
-        if not metadatas or not metadatas[0]:
+
+        metadatas = (results.get("metadatas") or [[]])[0] or []
+        distances = (results.get("distances") or [[]])[0] or []
+        embeddings = (results.get("embeddings") or [[]])[0]
+
+        records: list[dict[str, Any]] = []
+        for index, metadata in enumerate(metadatas):
+            distance = distances[index] if index < len(distances) else None
+            vector = embeddings[index] if embeddings is not None and index < len(embeddings) else None
+            records.append(
+                {
+                    "metadata": metadata or {},
+                    "distance": float(distance) if distance is not None else None,
+                    "embedding": [float(x) for x in vector] if vector is not None else None,
+                }
+            )
+        return records
+
+    async def find_nearest(self, embedding: list[float], n_results: int = 1) -> dict[str, Any] | None:
+        """가장 가까운 책 1권의 메타데이터(기존 동작 유지)."""
+        records = await self.find_candidates(embedding, n_results=n_results)
+        if not records:
             return None
-        return metadatas[0][0]
+        return records[0]["metadata"]

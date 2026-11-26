@@ -78,6 +78,19 @@ class FakeStore:
     async def find_nearest(self, embedding, n_results: int = 1):
         return {"isbn": "9791131963746", "title": "유토피아"}
 
+    async def find_candidates(self, embedding, n_results: int = 1):
+        return [
+            {
+                "metadata": {
+                    "isbn": "9791131963746",
+                    "title": "유토피아",
+                    "subCategory": "추리/스릴러",
+                },
+                "distance": 0.1,
+                "embedding": None,
+            }
+        ]
+
 
 BOOK_PAYLOAD = {
     "9791131963746": {

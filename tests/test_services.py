@@ -10,6 +10,7 @@ from app.services.aladin import AladinClient
 from app.services.classifier import CategoryClassifier
 from app.services.kyobo import KyoboHashtagCrawler
 from app.services.recommendation import NO_BOOK, NO_BOOK_ID, NO_PREFERENCES, RecommendationService
+from app.services.reranking import RankingWeights
 from app.services.scheduler import ScheduledJobs
 from app.services.vector_store import (
     ADDED_MESSAGE,
@@ -280,12 +281,40 @@ class Repo:
 _UNSET = object()
 
 
+def _record(isbn, distance, sub_categories=("추리/스릴러",), embedding=None):
+    return {
+        "metadata": {
+            "isbn": isbn,
+            "title": f"book-{isbn}",
+            "subCategory": ", ".join(sub_categories),
+        },
+        "distance": distance,
+        "embedding": embedding,
+    }
+
+
 class Store:
-    def __init__(self, metadata=_UNSET):
+    """`BookVectorStore.find_candidates`의 가짜 구현.
+
+    거리(제곱 L2)만 주면 재정렬이 코사인으로 환산해 쓴다 (d = 2 - 2cos).
+    """
+
+    def __init__(self, metadata=_UNSET, records=None):
         self.metadata = {"isbn": "9791131963746"} if metadata is _UNSET else metadata
+        self.records = records
+        self.requested: list[int] = []
+
+    async def find_candidates(self, embedding, n_results=1):
+        self.requested.append(n_results)
+        if self.records is not None:
+            return self.records
+        if self.metadata is None:
+            return []
+        return [{"metadata": self.metadata, "distance": 0.1, "embedding": None}]
 
     async def find_nearest(self, embedding, n_results=1):
-        return self.metadata
+        records = await self.find_candidates(embedding, n_results=n_results)
+        return records[0]["metadata"] if records else None
 
 
 class TestRecommendationService:
@@ -306,6 +335,97 @@ class TestRecommendationService:
     async def test_no_book_id_message(self):
         service = RecommendationService(Store(), Repo(book_id=None), FakeEmbedder())
         assert await service.recommend(1) == NO_BOOK_ID
+
+
+class IsbnRepository(Repo):
+    """ISBN별로 다른 book_id를 돌려주는 저장소."""
+
+    def __init__(self, mapping, preferences=None):
+        super().__init__(preferences=preferences)
+        self.mapping = mapping
+
+    def get_book_id_by_isbn(self, isbn):
+        return self.mapping.get(isbn)
+
+
+class TestRecommendationReranking:
+    """벡터 순위 → 하이브리드 재정렬이 실제 응답을 바꾸는지 확인한다."""
+
+    async def test_category_weight_changes_the_picked_book(self):
+        # a: 벡터 1위(cos 0.94)지만 선호 카테고리가 아님
+        # b: 벡터 2위(cos 0.90)이고 선호 카테고리 일치 → 0.90 + 0.15 = 1.05 로 역전
+        store = Store(
+            records=[
+                _record("a", distance=0.12, sub_categories=("SF",)),
+                _record("b", distance=0.20, sub_categories=("추리/스릴러",)),
+            ]
+        )
+        repo = IsbnRepository({"a": 1, "b": 2})
+        service = RecommendationService(store, repo, FakeEmbedder())
+        assert await service.recommend(1) == "Recommended book ID: 2"
+        assert repo.saved == [(1, 2)]
+
+    async def test_without_category_weight_vector_order_is_kept(self):
+        store = Store(
+            records=[
+                _record("a", distance=0.12, sub_categories=("SF",)),
+                _record("b", distance=0.20, sub_categories=("추리/스릴러",)),
+            ]
+        )
+        repo = IsbnRepository({"a": 1, "b": 2})
+        service = RecommendationService(
+            store, repo, FakeEmbedder(), weights=RankingWeights(category_weight=0.0)
+        )
+        assert await service.recommend(1) == "Recommended book ID: 1"
+
+    async def test_diversity_pushes_same_category_duplicate_down(self):
+        # a, b는 같은 카테고리, c는 다른 카테고리. 벡터로는 b(0.93) > c(0.92)지만
+        # MMR이 b에 중복 페널티를 줘서 2순위가 c가 된다.
+        store = Store(
+            records=[
+                _record("a", distance=0.10),  # cos 0.95
+                _record("b", distance=0.14),  # cos 0.93
+                _record("c", distance=0.16, sub_categories=("SF",)),  # cos 0.92
+            ]
+        )
+        service = RecommendationService(store, IsbnRepository({}), FakeEmbedder())
+        ranking = [candidate.isbn for candidate in await service.rank(1, limit=3)]
+        assert ranking == ["a", "c", "b"]
+
+    async def test_diversity_can_be_turned_off_with_mmr_lambda(self):
+        store = Store(
+            records=[
+                _record("a", distance=0.10),
+                _record("b", distance=0.14),
+                _record("c", distance=0.16, sub_categories=("SF",)),
+            ]
+        )
+        service = RecommendationService(
+            store,
+            IsbnRepository({}),
+            FakeEmbedder(),
+            weights=RankingWeights(mmr_lambda=1.0),
+        )
+        ranking = [candidate.isbn for candidate in await service.rank(1, limit=3)]
+        assert ranking == ["a", "b", "c"]
+
+    async def test_pool_size_is_used_for_vector_query(self):
+        store = Store()
+        service = RecommendationService(
+            store, Repo(), FakeEmbedder(), weights=RankingWeights(pool_size=5)
+        )
+        await service.rank(1)
+        assert store.requested == [5]
+
+    async def test_rank_without_preferences_is_empty(self):
+        service = RecommendationService(Store(), Repo(preferences=[]), FakeEmbedder())
+        assert await service.rank(1) == []
+
+    async def test_records_without_isbn_are_dropped(self):
+        store = Store(records=[{"metadata": {"title": "isbn 없음"}, "distance": 0.1}])
+        service = RecommendationService(store, Repo(), FakeEmbedder())
+        assert await service.rank(1) == []
+        assert await service.recommend(1) == NO_BOOK
 
 
 # ------------------------------------------------------------------- scheduler

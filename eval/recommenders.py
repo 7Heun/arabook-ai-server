@@ -4,9 +4,10 @@
 `member_sub_category_selections`로 들어오는 값)과 카탈로그. 정답 라벨은
 순위를 만드는 데 쓰지 않는다(라벨 누설 방지).
 
-0) `baseline_vector` — 현재 운영 로직. 선호 서브카테고리 문자열을 임베딩해
+0) `baseline_vector` — **이전** 운영 로직. 선호 서브카테고리 문자열을 임베딩해
    Chroma에서 가장 가까운 책 1권을 고른다. 여기서는 재현을 위해 **L2 거리**
    오름차순으로 전체 카탈로그를 정렬한다(Chroma 컬렉션 기본 space가 l2).
+   지금 운영은 3)이므로 이 변형은 비교 기준선이다.
 1) `category_filter` — 후보를 선호 서브카테고리와 겹치는 책으로 제한한 뒤
    같은 L2 거리로 정렬. 겹치는 책이 없으면 전체 카탈로그로 되돌아간다.
 2) `hybrid_category_boost` — 코사인 유사도에 카테고리 일치율을 가중치로 더한다.
@@ -15,6 +16,11 @@
 
 주의: 1)과 2)는 "개선안"이지 검증된 개선이 아니다. 라벨 데이터로 측정하기
 전까지는 어느 쪽이 나은지 알 수 없다.
+
+3) `production_hybrid` — **현재 운영 로직**과 같은 코드(`app/services/reranking.py`)로
+   순위를 만든다. 코사인 + 카테고리 가중 + MMR 다양성이다. 평가 코드가 운영 코드를
+   다시 구현하지 않게 하려고 함수를 공유한다. 따라서 이 변형은 가설이 아니라
+   "지금 배포된 규칙"이고, 비교의 기준이 된다.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from typing import Sequence
 
 import numpy as np
 
+from app.services.reranking import RankingWeights, build_candidates, mmr_rank
 from eval.catalog import Catalog, CatalogError
 
 
@@ -95,10 +102,13 @@ class Recommender:
 
 
 class BaselineVectorRecommender(Recommender):
-    """현재 운영 추천 로직의 재현 (Chroma l2 거리 기준 최근접)."""
+    """이전 운영 추천 로직의 재현 (Chroma l2 거리 기준 최근접).
+
+    지금 운영은 `production_hybrid`이므로 이 변형은 **과거 기준선**이다.
+    """
 
     key = "baseline_vector"
-    label = "baseline (현재 운영: 벡터 최근접, L2)"
+    label = "baseline (이전 운영: 벡터 최근접, L2)"
 
     def rank(self, context: QueryContext, limit: int) -> list[str]:
         if context.query_embedding is None:
@@ -152,10 +162,57 @@ class HybridCategoryBoostRecommender(Recommender):
         return self.index.as_isbns(self.index.top_indices(scores, limit, ascending=False))
 
 
+class ProductionHybridRecommender(Recommender):
+    """현재 운영 로직 (`RecommendationService.rank_from_preferences`)의 재현.
+
+    코사인 + 카테고리 가중 + MMR 다양성을 **운영과 같은 함수**로 계산한다.
+    후보 풀은 카탈로그 전체이고(운영은 Chroma 상위 pool_size권), 라벨은 순위에
+    쓰지 않는다.
+    """
+
+    key = "production_hybrid"
+    label = "production (현재 운영: 코사인 + 카테고리 가중 + MMR)"
+
+    def __init__(self, index: VectorIndex, weights: RankingWeights | None = None):
+        super().__init__(index)
+        self.weights = weights or RankingWeights()
+
+    @property
+    def notes(self) -> str:
+        return (
+            f"category_weight={self.weights.category_weight}, "
+            f"mmr_lambda={self.weights.mmr_lambda} (사전 고정값, 평가셋으로 튜닝하지 않음)"
+        )
+
+    def _records(self) -> list[dict]:
+        return [
+            {
+                "metadata": {
+                    "isbn": item.isbn,
+                    "title": item.title,
+                    "mainCategory": item.main_category,
+                    "subCategory": ", ".join(item.sub_categories),
+                },
+                "distance": None,
+                "embedding": list(item.embedding) if item.embedding is not None else None,
+            }
+            for item in self.index.catalog.items
+        ]
+
+    def rank(self, context: QueryContext, limit: int) -> list[str]:
+        if context.query_embedding is None:
+            raise CatalogError("query embedding이 없습니다.")
+        query = [float(x) for x in context.query_embedding]
+        candidates = build_candidates(self._records(), query_embedding=query)
+        ranked = mmr_rank(candidates, context.preferences, self.weights, limit=limit)
+        return [candidate.isbn for candidate in ranked]
+
+
 VARIANT_REGISTRY = {
     BaselineVectorRecommender.key: BaselineVectorRecommender,
     CategoryFilterRecommender.key: CategoryFilterRecommender,
     HybridCategoryBoostRecommender.key: HybridCategoryBoostRecommender,
+    ProductionHybridRecommender.key: ProductionHybridRecommender,
 }
 
 
@@ -166,6 +223,10 @@ def build_recommenders(index: VectorIndex, keys: Sequence[str], alpha: float = 0
             raise ValueError(f"알 수 없는 variant: {key} (가능: {', '.join(VARIANT_REGISTRY)})")
         if key == HybridCategoryBoostRecommender.key:
             recommenders.append(HybridCategoryBoostRecommender(index, alpha=alpha))
+        elif key == ProductionHybridRecommender.key:
+            recommenders.append(
+                ProductionHybridRecommender(index, weights=RankingWeights(category_weight=alpha))
+            )
         else:
             recommenders.append(VARIANT_REGISTRY[key](index))
     return recommenders
