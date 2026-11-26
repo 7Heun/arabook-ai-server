@@ -68,6 +68,14 @@ class BookRepository:
                 tunnel.close()
 
     # ------------------------------------------------------------------ 조회
+    def connection(self):
+        """공개 진입점: 스크립트/진단용 커넥션 컨텍스트.
+
+        `scripts/export_labels.py`처럼 이 저장소가 모르는 테이블을 읽어야 하는
+        작업은 SQL을 직접 쓰고 연결/정리만 이 클래스에 맡긴다(SSH 터널 로직 중복 방지).
+        """
+        return self._connection()
+
     def get_sub_category_id(self, category_name: str) -> int | None:
         with self._connection() as connection:
             with connection.cursor() as cursor:

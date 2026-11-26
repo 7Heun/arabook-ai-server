@@ -197,6 +197,12 @@ scripts/**/__pycache__/
 # 평가 실행 캐시 · 임시 산출물
 eval/cache/
 
+# 실제 사용자 라벨(회원 ID + 읽기 이력)은 개인정보라 커밋하지 않습니다.
+# 생성: python scripts/export_labels.py (eval/labels.example.json은 형식 예시)
+eval/labels.json
+# 메타데이터 정제 스크립트가 만드는 사본/리포트
+chroma_db_clean/
+
 # 벡터 DB는 데이터입니다. 코드가 아니므로 git에 올리지 않습니다.
 # 재생성: /add-book 호출 또는 매월 베스트셀러 스케줄러 (eval/README.md 참고)
 chroma_db/
