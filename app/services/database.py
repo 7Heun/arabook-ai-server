@@ -93,6 +93,56 @@ class BookRepository:
                 row = cursor.fetchone()
                 return row["book_id"] if row else None
 
+    def get_book_ids_by_isbns(self, isbns: Sequence[str]) -> dict[str, int]:
+        """여러 ISBN의 book_id를 한 번에 조회한다(없는 ISBN은 결과에서 빠진다).
+
+        top-k 응답은 책 여러 권의 book_id가 필요하다. 한 권씩 조회하면 SSH 터널을
+        권수만큼 여는 셈이라 IN 절로 묶었다.
+        """
+        unique = []
+        for isbn in isbns:
+            cleaned = str(isbn).strip()
+            if cleaned and cleaned not in unique:
+                unique.append(cleaned)
+        if not unique:
+            return {}
+        placeholders = ", ".join(["%s"] * len(unique))
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT book_id, isbn FROM books WHERE isbn IN ({placeholders})",
+                    tuple(unique),
+                )
+                rows = cursor.fetchall()
+        return {row["isbn"]: row["book_id"] for row in rows if row.get("isbn")}
+
+    def get_recent_recommended_isbns(
+        self, member_id: int | str, days: int = 30
+    ) -> list[str]:
+        """최근 `days`일 안에 이 회원에게 추천한 책의 ISBN.
+
+        추천에서 "이미 본 책"을 빼기 위한 목록이다. `daily_book_id_recommendations`는
+        Spring 서버와 공유하는 테이블이라 읽기만 한다.
+        (읽은 책까지 빼려면 대여/서재 테이블을 함께 읽어야 한다 — 이 저장소는 그
+        스키마를 모르므로 추천 이력만 쓴다.)
+        """
+        if days <= 0:
+            return []
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT DISTINCT b.isbn
+                    FROM daily_book_id_recommendations r
+                    JOIN books b ON r.book_id = b.book_id
+                    WHERE r.member_id = %s
+                      AND r.recommendation_date >= CURDATE() - INTERVAL %s DAY
+                    """,
+                    (member_id, int(days)),
+                )
+                rows = cursor.fetchall()
+        return [row["isbn"] for row in rows if row.get("isbn")]
+
     def get_member_preferences(self, member_id: int | str) -> list[str]:
         with self._connection() as connection:
             with connection.cursor() as cursor:

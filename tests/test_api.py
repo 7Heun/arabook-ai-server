@@ -60,8 +60,9 @@ class FakeClassifier:
 
 
 class FakeStore:
-    def __init__(self):
+    def __init__(self, records: list[dict] | None = None):
         self.stored: dict[str, dict] = {}
+        self._records = records
 
     async def add_book(self, book, main_category, sub_category, hashtags) -> str:
         self.stored[book.isbn] = {"book": book, "main": main_category, "subs": sub_category}
@@ -79,6 +80,8 @@ class FakeStore:
         return {"isbn": "9791131963746", "title": "유토피아"}
 
     async def find_candidates(self, embedding, n_results: int = 1):
+        if self._records is not None:
+            return self._records
         return [
             {
                 "metadata": {
@@ -117,11 +120,21 @@ class FakeIngestion:
 
 
 class FakeRepository:
-    def __init__(self, preferences=None, book_id=42, error: Exception | None = None):
+    def __init__(
+        self,
+        preferences=None,
+        book_id=42,
+        error: Exception | None = None,
+        excluded: list[str] | None = None,
+        book_ids: dict[str, int] | None = None,
+    ):
         self.preferences = ["추리/스릴러"] if preferences is None else preferences
         self.book_id = book_id
         self.error = error
+        self.excluded = list(excluded or [])
+        self.book_ids = dict(book_ids or {})
         self.saved: list[tuple] = []
+        self.exclusion_lookups: list[tuple] = []
 
     def get_member_preferences(self, member_id):
         if self.error:
@@ -131,7 +144,22 @@ class FakeRepository:
     def get_book_id_by_isbn(self, isbn):
         if self.error:
             raise self.error
-        return self.book_id
+        return self.book_ids.get(isbn, self.book_id)
+
+    def get_book_ids_by_isbns(self, isbns):
+        if self.error:
+            raise self.error
+        return {
+            isbn: self.book_ids.get(isbn, self.book_id)
+            for isbn in isbns
+            if self.book_ids.get(isbn, self.book_id) is not None
+        }
+
+    def get_recent_recommended_isbns(self, member_id, days=30):
+        if self.error:
+            raise self.error
+        self.exclusion_lookups.append((member_id, days))
+        return list(self.excluded)
 
     def save_recommendation(self, member_id, book_id, date):
         if self.error:
@@ -329,6 +357,138 @@ def test_recommend_db_failure_is_503(client, override):
 def test_recommend_requires_member_id(client):
     response = client.post("/recommend", json={})
     assert response.status_code == 422
+
+
+# --------------------------------------------------------------- recommendations
+RECOMMENDATION_RECORDS = [
+    {
+        "metadata": {
+            "isbn": "a",
+            "title": "A",
+            "author": "저자A",
+            "mainCategory": "소설",
+            "subCategory": "추리/스릴러",
+        },
+        "distance": 0.10,
+        "embedding": None,
+    },
+    {
+        "metadata": {"isbn": "b", "title": "B", "subCategory": "추리/스릴러"},
+        "distance": 0.14,
+        "embedding": None,
+    },
+    {
+        "metadata": {"isbn": "c", "title": "C", "mainCategory": "과학", "subCategory": "SF"},
+        "distance": 0.16,
+        "embedding": None,
+    },
+]
+
+
+def _list_service(store=None, repository=None) -> RecommendationService:
+    return RecommendationService(
+        store or FakeStore(RECOMMENDATION_RECORDS),
+        repository or FakeRepository(book_ids={"a": 1, "b": 2, "c": 3}),
+        FakeEmbedder(),
+    )
+
+
+def test_recommendations_returns_ranked_list_shape(client, override):
+    override(provide_recommendation_service, _list_service())
+    response = client.post("/recommendations", json={"member_id": 1, "limit": 3})
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["member_id"] == 1
+    assert body["limit"] == 3
+    assert body["preferences"] == ["추리/스릴러"]
+    assert body["excluded_isbn_count"] == 0
+    assert body["excluded_candidate_count"] == 0
+    assert body["exclusion_relaxed"] is False
+    assert body["message"] is None
+    # MMR: 동일 카테고리 b가 3순위로 밀리고 c가 2순위
+    assert [item["isbn"] for item in body["recommendations"]] == ["a", "c", "b"]
+    assert [item["rank"] for item in body["recommendations"]] == [1, 2, 3]
+    assert [item["book_id"] for item in body["recommendations"]] == [1, 3, 2]
+    assert set(body["recommendations"][0]) == {
+        "rank",
+        "book_id",
+        "isbn",
+        "title",
+        "author",
+        "main_category",
+        "sub_categories",
+        "score",
+        "similarity",
+        "category_overlap",
+    }
+    first = body["recommendations"][0]
+    assert first["title"] == "A"
+    assert first["author"] == "저자A"
+    assert first["main_category"] == "소설"
+    assert first["sub_categories"] == ["추리/스릴러"]
+    assert first["category_overlap"] == 1.0
+    assert first["score"] > first["similarity"]  # 카테고리 가중이 더해진다
+
+
+def test_recommendations_default_limit_is_five(client, override):
+    override(provide_recommendation_service, _list_service())
+    body = client.post("/recommendations", json={"member_id": 1}).json()
+    assert body["limit"] == 5
+    assert len(body["recommendations"]) == 3  # 후보가 3권뿐
+
+
+def test_recommendations_excludes_recent_books(client, override):
+    repository = FakeRepository(book_ids={"a": 1, "b": 2, "c": 3}, excluded=["a"])
+    override(provide_recommendation_service, _list_service(repository=repository))
+    body = client.post("/recommendations", json={"member_id": 1, "limit": 3}).json()
+    assert [item["isbn"] for item in body["recommendations"]] == ["b", "c"]
+    assert body["excluded_isbn_count"] == 1
+    assert body["excluded_candidate_count"] == 1
+    assert body["exclusion_relaxed"] is False
+
+
+def test_recommendations_marks_relaxed_exclusion_when_all_candidates_excluded(client, override):
+    repository = FakeRepository(book_ids={"a": 1, "b": 2, "c": 3}, excluded=["a", "b", "c"])
+    override(provide_recommendation_service, _list_service(repository=repository))
+    body = client.post("/recommendations", json={"member_id": 1, "limit": 3}).json()
+    assert body["exclusion_relaxed"] is True
+    assert body["excluded_candidate_count"] == 3
+    assert len(body["recommendations"]) == 3
+
+
+def test_recommendations_without_preferences_returns_message(client, override):
+    override(
+        provide_recommendation_service,
+        _list_service(repository=FakeRepository(preferences=[])),
+    )
+    body = client.post("/recommendations", json={"member_id": 1}).json()
+    assert body["recommendations"] == []
+    assert body["message"] == NO_PREFERENCES
+
+
+def test_recommendations_rejects_out_of_range_limit(client, override):
+    override(provide_recommendation_service, _list_service())
+    assert client.post("/recommendations", json={"member_id": 1, "limit": 0}).status_code == 422
+    assert client.post("/recommendations", json={"member_id": 1, "limit": 21}).status_code == 422
+    assert client.post("/recommendations", json={"limit": 3}).status_code == 422
+
+
+def test_recommendations_db_failure_is_503(client, override):
+    override(
+        provide_recommendation_service,
+        _list_service(repository=FakeRepository(error=ServiceUnavailableError("DB 연결 실패"))),
+    )
+    response = client.post("/recommendations", json={"member_id": 1})
+    assert response.status_code == 503
+
+
+def test_recommend_excludes_recently_recommended_book(client, override):
+    store = FakeStore(RECOMMENDATION_RECORDS)
+    repository = FakeRepository(book_ids={"a": 1, "b": 2, "c": 3}, excluded=["a"])
+    override(provide_recommendation_service, RecommendationService(store, repository, FakeEmbedder()))
+    response = client.post("/recommend", json={"member_id": 1})
+    assert response.json() == {"message": "Recommended book ID: 2"}
 
 
 # ------------------------------------------------------------- 공통 오류 처리

@@ -37,6 +37,37 @@ class RecommendRequest(BaseModel):
     member_id: int = Field(..., description="회원 ID")
 
 
+class RecommendationListRequest(BaseModel):
+    member_id: int = Field(..., description="회원 ID")
+    limit: int = Field(5, ge=1, le=20, description="추천 권수 (1~20)")
+
+
+class RecommendationItem(BaseModel):
+    rank: int = Field(..., description="순위 (1부터)")
+    book_id: int | None = Field(None, description="MySQL book_id (books에 없으면 null)")
+    isbn: str
+    title: str
+    author: str | None = None
+    main_category: str | None = None
+    sub_categories: list[str] = Field(default_factory=list, description="서브카테고리 목록")
+    score: float = Field(..., description="하이브리드 관련도 = 코사인 + 가중치 × 카테고리 일치율")
+    similarity: float = Field(..., description="질의-도서 코사인 유사도")
+    category_overlap: float = Field(..., description="선호 서브카테고리 일치율 (0~1)")
+
+
+class RecommendationListResponse(BaseModel):
+    member_id: int
+    limit: int
+    preferences: list[str] = Field(default_factory=list, description="회원이 고른 서브카테고리")
+    recommendations: list[RecommendationItem] = Field(default_factory=list)
+    excluded_isbn_count: int = Field(0, description="제외 목록 크기 (최근 추천 이력)")
+    excluded_candidate_count: int = Field(0, description="제외로 후보에서 빠진 권수")
+    exclusion_relaxed: bool = Field(
+        False, description="후보가 전부 제외되어 제외를 풀고 추천한 경우 true"
+    )
+    message: str | None = Field(None, description="추천을 만들지 못했을 때의 사유")
+
+
 class GenerateResponse(BaseModel):
     generated_text: str
 

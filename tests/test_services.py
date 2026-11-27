@@ -428,6 +428,156 @@ class TestRecommendationReranking:
         assert await service.recommend(1) == NO_BOOK
 
 
+# ------------------------------------------------------------------ 제외 정책
+class ExclusionRepository(IsbnRepository):
+    """최근 추천 이력을 돌려주는 저장소 대역."""
+
+    def __init__(self, mapping=None, preferences=None, excluded=(), error=None):
+        super().__init__(mapping or {}, preferences=preferences)
+        self.excluded = list(excluded)
+        self.error = error
+        self.lookups: list[tuple] = []
+
+    def get_recent_recommended_isbns(self, member_id, days=30):
+        self.lookups.append((member_id, days))
+        if self.error:
+            raise self.error
+        return list(self.excluded)
+
+
+class BatchRepository(ExclusionRepository):
+    """book_id를 IN 절로 한 번에 돌려주는 저장소 대역."""
+
+    def __init__(self, mapping, batch=None, **kwargs):
+        super().__init__(mapping, **kwargs)
+        self.batch = batch or {}
+        self.batch_calls: list[list[str]] = []
+
+    def get_book_ids_by_isbns(self, isbns):
+        self.batch_calls.append(list(isbns))
+        return {isbn: self.batch[isbn] for isbn in isbns if isbn in self.batch}
+
+    def get_book_id_by_isbn(self, isbn):
+        raise AssertionError("일괄 조회가 가능하면 한 권씩 조회하지 않는다")
+
+
+def _three_books():
+    # a: 추리/스릴러 cos 0.95, b: 추리/스릴러 cos 0.93, c: SF cos 0.92
+    return Store(
+        records=[
+            _record("a", distance=0.10),
+            _record("b", distance=0.14),
+            _record("c", distance=0.16, sub_categories=("SF",)),
+        ]
+    )
+
+
+class TestRecommendationExclusion:
+    async def test_recent_recommended_books_are_not_recommended_again(self):
+        repo = ExclusionRepository({"a": 1, "b": 2, "c": 3}, excluded=["a"])
+        service = RecommendationService(_three_books(), repo, FakeEmbedder())
+        assert await service.recommend(1) == "Recommended book ID: 2"
+        assert repo.saved == [(1, 2)]
+        assert repo.lookups == [(1, 30)]
+
+    async def test_exclusion_applies_to_whole_ranking(self):
+        repo = ExclusionRepository({"a": 1, "b": 2, "c": 3}, excluded=["a"])
+        service = RecommendationService(_three_books(), repo, FakeEmbedder())
+        ranking = [candidate.isbn for candidate in await service.rank(1, limit=3)]
+        assert ranking == ["b", "c"]
+
+    async def test_exclusion_can_be_disabled(self):
+        repo = ExclusionRepository({"a": 1, "b": 2}, excluded=["a"])
+        service = RecommendationService(
+            _three_books(), repo, FakeEmbedder(), exclude_recent_days=0
+        )
+        assert await service.recommend(1) == "Recommended book ID: 1"
+        assert repo.lookups == []
+
+    async def test_all_candidates_excluded_falls_back_without_crashing(self):
+        class LenientRepository(ExclusionRepository):
+            def get_book_id_by_isbn(self, isbn):
+                return {"a": 1, "b": 2, "c": 3}.get(isbn)
+
+        repo = LenientRepository(excluded=["a", "b", "c"])
+        service = RecommendationService(_three_books(), repo, FakeEmbedder())
+        # 1권 응답("추천 없음"으로 끝나지 않도록 제외를 푼다)
+        assert await service.recommend(1) == "Recommended book ID: 1"
+        result = await service.recommend_many(1, limit=3)
+        assert result.exclusion_relaxed is True
+        assert [item.isbn for item in result.items] == ["a", "c", "b"]
+
+    async def test_repository_without_exclusion_method_is_supported(self):
+        # 기존 Mock/테스트 대역처럼 메서드가 없어도 동작해야 한다(getattr 기본 동작).
+        service = RecommendationService(_three_books(), IsbnRepository({"a": 1}), FakeEmbedder())
+        assert await service.recommend(1) == "Recommended book ID: 1"
+
+    async def test_exclusion_lookup_failure_does_not_block_recommendation(self):
+        repo = ExclusionRepository({"a": 1}, error=RuntimeError("table not found"))
+        service = RecommendationService(_three_books(), repo, FakeEmbedder())
+        assert await service.recommend(1) == "Recommended book ID: 1"
+
+    async def test_database_unavailable_while_reading_exclusions_is_raised(self):
+        from app.core.errors import ServiceUnavailableError
+
+        repo = ExclusionRepository(error=ServiceUnavailableError("DB 연결 실패"))
+        service = RecommendationService(_three_books(), repo, FakeEmbedder())
+        with pytest.raises(ServiceUnavailableError):
+            await service.recommend(1)
+
+
+class TestRecommendationList:
+    async def test_returns_ranked_items_with_scores(self):
+        repo = BatchRepository(
+            {}, batch={"a": 11, "b": 22, "c": 33}, excluded=[]
+        )
+        service = RecommendationService(_three_books(), repo, FakeEmbedder())
+        result = await service.recommend_many(1, limit=3)
+
+        assert [item.isbn for item in result.items] == ["a", "c", "b"]
+        assert [item.rank for item in result.items] == [1, 2, 3]
+        assert [item.book_id for item in result.items] == [11, 33, 22]
+        assert repo.batch_calls == [["a", "c", "b"]]
+        first = result.items[0]
+        assert first.similarity == pytest.approx(0.95, abs=1e-6)
+        assert first.category_overlap == pytest.approx(1.0)
+        assert first.score == pytest.approx(1.10, abs=1e-6)
+        assert first.sub_categories == ["추리/스릴러"]
+
+    async def test_books_missing_in_mysql_keep_null_book_id(self):
+        repo = BatchRepository({}, batch={"a": 11})
+        service = RecommendationService(_three_books(), repo, FakeEmbedder())
+        result = await service.recommend_many(1, limit=3)
+        assert result.items[0].book_id == 11
+        assert result.items[1].book_id is None
+
+    async def test_without_preferences_returns_message_and_no_items(self):
+        service = RecommendationService(_three_books(), Repo(preferences=[]), FakeEmbedder())
+        result = await service.recommend_many(1)
+        assert result.items == []
+        assert result.message == NO_PREFERENCES
+
+    async def test_reports_how_many_candidates_were_excluded(self):
+        repo = ExclusionRepository({"a": 1}, excluded=["a", "b"])
+        service = RecommendationService(_three_books(), repo, FakeEmbedder())
+        result = await service.recommend_many(1, limit=3)
+        assert result.excluded_isbn_count == 2
+        assert result.excluded_candidate_count == 2
+        assert result.exclusion_relaxed is False
+        assert [item.isbn for item in result.items] == ["c"]
+
+    async def test_limit_is_clamped_to_supported_range(self):
+        service = RecommendationService(_three_books(), Repo(), FakeEmbedder())
+        assert (await service.recommend_many(1, limit=0)).limit == 1
+        assert (await service.recommend_many(1, limit=999)).limit == 20
+
+    async def test_no_candidates_returns_no_book_message(self):
+        service = RecommendationService(Store(metadata=None), Repo(), FakeEmbedder())
+        result = await service.recommend_many(1)
+        assert result.items == []
+        assert result.message == NO_BOOK
+
+
 # ------------------------------------------------------------------- scheduler
 class SchedulerRepo(Repo):
     def __init__(self, member_ids=(1, 2)):

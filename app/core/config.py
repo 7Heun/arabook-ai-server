@@ -67,6 +67,8 @@ class Settings:
     recommend_pool_size: int = 20
     recommend_category_weight: float = 0.15
     recommend_mmr_lambda: float = 0.85
+    # 이미 추천한 책을 후보에서 빼는 기간(일). 0이면 제외하지 않는다.
+    recommend_exclude_recent_days: int = 30
     database: DatabaseSettings = DatabaseSettings(None, 22, None, None, None, None, None, None)
 
     @classmethod
@@ -85,6 +87,7 @@ class Settings:
             recommend_pool_size=int(os.getenv("RECOMMEND_POOL_SIZE", "20") or 20),
             recommend_category_weight=float(os.getenv("RECOMMEND_CATEGORY_WEIGHT", "0.15")),
             recommend_mmr_lambda=float(os.getenv("RECOMMEND_MMR_LAMBDA", "0.85")),
+            recommend_exclude_recent_days=int(os.getenv("RECOMMEND_EXCLUDE_RECENT_DAYS", "30") or 0),
             database=DatabaseSettings(
                 ssh_host=os.getenv("SSH_TUNNEL_HOST_ADDRESS"),
                 ssh_port=int(os.getenv("SSH_TUNNEL_HOST_PORT", "22") or 22),

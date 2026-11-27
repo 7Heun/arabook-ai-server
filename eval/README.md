@@ -4,10 +4,13 @@
 운영 추천 로직과 개선안 후보를 **같은 라벨셋**으로 돌려 Recall·Precision·MRR·
 커버리지·다양성을 비교합니다.
 
-> **현재 상태: 수치 미산출.**
-> 저장소에는 아직 실제 사용자 라벨이 없습니다. `eval/labels.example.json`은
-> 형식 예시(합성)일 뿐이라 하네스가 측정을 거부합니다. 이 문서의 표는
-> "측정 방법"이지 "측정 결과"가 아닙니다.
+> **현재 상태**
+> - **정확도 지표: 수치 미산출.** 저장소에는 아직 실제 사용자 라벨이 없습니다.
+>   `eval/labels.example.json`은 형식 예시(합성)일 뿐이라 하네스가 측정을 거부합니다.
+>   이 문서의 표는 "측정 방법"이지 "측정 결과"가 아닙니다.
+> - **다양성·커버리지: 30권 카탈로그에서 실측함.** 라벨 없이도 잴 수 있는 지표만 따로
+>   계산했습니다([§5](#5-라벨 없이-할-수-있는-점검), [`diversity_benchmark.md`](diversity_benchmark.md)).
+>   이것도 **추천 정확도가 아닙니다.**
 
 ---
 
@@ -138,11 +141,48 @@ split에서 해야 한다는 것을 코드 주석과 리포트에 남겼습니�
 
 ## 5. 라벨 없이 할 수 있는 점검
 
+### 5.1 임베딩 공간 진단
+
 `scripts/catalog_diagnostics.py`는 저장된 임베딩만으로 "최근접 이웃이 같은 서브카테고리인가"를
 확인합니다(우연 기대값 대비 lift). 카테고리 정보가 벡터에 실려 있는지, 유사도가 지나치게
 압축되어 있지는 않은지 보는 **진단**이며, 추천 정확도가 아닙니다. 결과는
 [`catalog_diagnostics.md`](catalog_diagnostics.md)에 있습니다(30권, lift 3.85×,
 최근접 유사도 0.839~0.931).
+
+### 5.2 Top-5 다양성·커버리지 실측 — `scripts/diversity_benchmark.py`
+
+라벨 없이 잴 수 있는 것 중 하나는 **"순위 규칙이 만드는 목록이 카탈로그 안에서 얼마나
+퍼지는가"** 입니다. 이 스크립트는 `chroma_db`의 실제 임베딩 30권만 읽어(외부 API 호출 없음,
+원본은 임시 복사본만 열고 md5 불변 확인) `baseline_vector`와 `production_hybrid`의 Top-k를
+비교합니다.
+
+질의는 저장된 벡터로 만든 **대리 질의**입니다(운영 질의는 서브카테고리 이름 텍스트의 임베딩).
+
+| 모드 | 질의 벡터 | 선호 | 후보 풀 | 건수 |
+|---|---|---|---|---|
+| `book` | 책 1권의 임베딩 | 그 책의 서브카테고리 | 30권에서 그 책만 제외 | 30 |
+| `category` | 서브카테고리 책들의 평균(단위 벡터) | 그 서브카테고리 | 전체 30권 | 13 |
+
+2026-11-26 실행 결과 ([`diversity_benchmark.md`](diversity_benchmark.md)):
+
+| 질의 | variant | 고유 서브카테고리@5 | 엔트로피@5 | 커버리지@3 | 커버리지@5 |
+|---|---|---|---|---|---|
+| `book` | `baseline_vector` | 7.03 | 0.937 | 80.0% | 93.3% |
+| `book` | `production_hybrid` | 7.83 | 0.954 | 100.0% | 100.0% |
+| `category` | `baseline_vector` | 7.15 | 0.911 | 80.0% | 83.3% |
+| `category` | `production_hybrid` | 7.69 | 0.917 | 80.0% | 90.0% |
+
+두 변형의 Top-5는 실제로 다릅니다(평균 Jaccard 0.535(`book`)·0.696(`category`),
+top-1 일치 46.7%·76.9%).
+
+**해석 주의**
+
+- 정확도가 아닙니다. 라벨이 없어 Recall·Precision·MRR·nDCG는 계산하지 않았습니다.
+- MMR은 관련도를 포기하고 다양성을 얻습니다. 하이브리드 목록의 2~5위에는 관련도가 낮은
+  다른 장르 책이 섞이는 경우가 있습니다. 어느 쪽이 나은지는 라벨로만 판단할 수 있습니다.
+- 30권·대리 질의·중복 제외(`exclude_isbns`) 미적용 조건입니다. 운영 수치가 아닙니다.
+- 지표 정의는 `metrics.py`의 `distinct_category_count`/`category_entropy`/`coverage`를
+  그대로 썼습니다(별도 정의를 만들지 않았습니다).
 
 ## 6. 실행
 
@@ -165,6 +205,10 @@ python scripts/catalog_stats.py --db chroma_db
 
 # 5) 임베딩 공간 진단 (라벨 불필요, 정확도 아님)
 python scripts/catalog_diagnostics.py --db chroma_db
+
+# 6) Top-5 다양성·커버리지 실측 (라벨·API 키 불필요, 정확도 아님)
+python scripts/diversity_benchmark.py
+python scripts/diversity_benchmark.py --query-mode book --ks 1,3,5
 ```
 
 | 옵션 | 기본값 | 설명 |
@@ -209,10 +253,12 @@ python scripts/catalog_diagnostics.py --db chroma_db
 4. 오프라인 지표는 온라인 지표(클릭률, 대여 전환)와 다를 수 있습니다.
 5. 콜드 스타트 사용자(선호 카테고리 없음)는 이 평가에서 제외됩니다. 운영에서는
    `"No preferences found for the member."`를 반환하므로 별도 과제입니다.
-6. 단일 정답 1권을 반환하는 현행 API에서는 Recall@k의 의미가 제한적입니다.
-   API를 top-k로 확장할 때 진짜 값이 생깁니다.
+6. API는 `/recommendations`로 top-k를 제공하지만, Spring 서버가 아직 1권(`/recommend`)만
+   쓰므로 온라인 지표는 1권 기준입니다.
 7. `production_hybrid`의 가중치(alpha/lambda)는 사전 고정값입니다. 어느 값이
    나은지는 라벨이 생긴 뒤 dev split에서 판단해야 합니다.
+8. 중복 제외(`exclude_isbns`)는 평가 하네스에 아직 넣지 않았습니다(후보 풀이 달라져
+   이전 결과와 직접 비교가 안 되므로). 다양성 실측도 제외 없이 잽니다.
 
 ## 9. 다음 실험 계획
 

@@ -25,7 +25,9 @@ DESCRIPTION = """
 
 - `/add-book`: ISBN → 알라딘 메타데이터 → 교보 해시태그 → LLM 카테고리 분류 →
   MySQL + Chroma 저장
-- `/recommend`: 회원이 고른 서브카테고리로 Chroma에서 가장 가까운 책 1권 추천
+- `/recommend`: 회원이 고른 서브카테고리로 Chroma에서 후보를 찾고, 하이브리드 재정렬
+  (코사인 + 카테고리 가중 + MMR 다양성) 후 1권 추천 (기존 응답 유지)
+- `/recommendations`: 같은 규칙으로 상위 k권 추천 (순위·점수 포함, 최근 추천 책 제외)
 - `/classify`, `/crawl`, `/generate`: 위 파이프라인의 개별 단계
 
 추천 품질 측정 방법은 저장소의 `eval/README.md`를 참고하세요.
